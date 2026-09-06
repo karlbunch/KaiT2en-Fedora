@@ -7,7 +7,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#define T2SMC_VERSION "0.0.1+karlbunch.1"
+#define T2SMC_VERSION "0.0.1+karlbunch.2"
 
 #include <linux/delay.h>
 #include <linux/acpi.h>
@@ -975,15 +975,28 @@ static int t2smc_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 				return -EINVAL;
 			speed = (unsigned int)val;
 			return t2smc_write_fan(t2, channel, T2SMC_FAN_OPT_MIN, speed);
-		case hwmon_fan_target:
+		case hwmon_fan_target: {
+			unsigned int lo, hi;
+
 			if (val < 0)
 				return -EINVAL;
-			speed = (unsigned int)val;
+			/*
+			 * Clamp to the SMC's own limits for this fan so no
+			 * userland mistake can ask for a stopped fan.
+			 */
+			ret = t2smc_read_fan(t2, channel, T2SMC_FAN_OPT_MIN, &lo);
+			if (ret)
+				return ret;
+			ret = t2smc_read_fan(t2, channel, T2SMC_FAN_OPT_MAX, &hi);
+			if (ret)
+				return ret;
+			speed = clamp_val((unsigned int)val, lo, hi);
 			/* Enter manual mode before setting target speed */
 			ret = t2smc_write_fan_manual(t2, channel, 1);
 			if (ret)
 				return ret;
 			return t2smc_write_fan(t2, channel, T2SMC_FAN_OPT_TARGET, speed);
+		}
 		case hwmon_fan_enable:
 			/* 1 = give the fan back to the SMC, 0 = manual mode */
 			if (val != 0 && val != 1)
@@ -1606,6 +1619,12 @@ static int t2smc_probe(struct platform_device *pdev)
 				       t2smc_unregister_power_notifier, t2);
 	if (ret)
 		return ret;
+
+	/*
+	 * Start clean: whatever a previous OS or a crashed daemon left pinned,
+	 * every fan is the SMC's again until userland says otherwise.
+	 */
+	t2smc_fans_auto_all(t2);
 
 	dev_info(t2->dev, "t2smc %s ready (fans=%u)\n",
 		 T2SMC_VERSION, t2->fan_count);

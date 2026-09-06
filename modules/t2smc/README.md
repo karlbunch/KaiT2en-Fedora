@@ -143,7 +143,11 @@ manual mode and sets the target speed.
 
 `fanN_enable` reports and sets that mode: `1` = the SMC's automatic control,
 `0` = manual (the `fanN_target` value is honoured). Write `1` to hand a fan back
-to the SMC. Unloading the module hands every fan back automatically.
+to the SMC. Loading and unloading the module hand every fan back automatically,
+so a fan pinned by a crashed program is never inherited across a reload or a
+reboot. A `fanN_target` write is clamped to the fan's own `fanN_min` and
+`fanN_max` as reported by the SMC, so no userland mistake can ask for a stopped
+fan; read the attribute back to see the value that was applied.
 
 The attributes `fanN_min` and `fanN_max` are limits reported by the SMC.
 `fanN_min` is writable; `fanN_max` is read-only.
