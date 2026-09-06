@@ -141,6 +141,10 @@ echo 3000 | sudo tee "$HWMON/fan1_target"
 The fan speed values are in RPM. Writing to `fanN_target` switches the fan to
 manual mode and sets the target speed.
 
+`fanN_enable` reports and sets that mode: `1` = the SMC's automatic control,
+`0` = manual (the `fanN_target` value is honoured). Write `1` to hand a fan back
+to the SMC. Unloading the module hands every fan back automatically.
+
 The attributes `fanN_min` and `fanN_max` are limits reported by the SMC.
 `fanN_min` is writable; `fanN_max` is read-only.
 

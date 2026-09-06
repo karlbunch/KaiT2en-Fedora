@@ -7,7 +7,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#define T2SMC_VERSION "0.0.1"
+#define T2SMC_VERSION "0.0.1+karlbunch.1"
 
 #include <linux/delay.h>
 #include <linux/acpi.h>
@@ -856,6 +856,43 @@ static int t2smc_write_fan_manual(struct t2smc_device *t2, int fan_idx,
 	}
 }
 
+/* Read a fan's manual/automatic state: 1 = manual (target honoured), 0 = SMC automatic. */
+static int t2smc_read_fan_manual(struct t2smc_device *t2, int fan_idx,
+				  unsigned int *manual)
+{
+	char key[5];
+	bool has_fmd;
+	u8 buf[2];
+	int ret;
+
+	scnprintf(key, sizeof(key), FAN_MANUAL_FMT, fan_idx);
+	ret = t2smc_has_key(t2, key, &has_fmd);
+	if (ret)
+		return ret;
+
+	if (has_fmd) {
+		ret = t2smc_read_key(t2, key, buf, 1);
+		if (ret)
+			return ret;
+		*manual = buf[0] ? 1 : 0;
+	} else {
+		ret = t2smc_read_key(t2, FANS_MANUAL, buf, 2);
+		if (ret)
+			return ret;
+		*manual = ((buf[0] << 8 | buf[1]) >> fan_idx) & 0x01;
+	}
+	return 0;
+}
+
+/* Hand every fan back to the SMC's automatic control (module unload). */
+static void t2smc_fans_auto_all(struct t2smc_device *t2)
+{
+	int i;
+
+	for (i = 0; i < t2->fan_count; i++)
+		t2smc_write_fan_manual(t2, i, 0);
+}
+
 /* -- hwmon interface -- */
 #define T2SMC_FAN_OPT_ACTUAL  0
 #define T2SMC_FAN_OPT_MIN     1
@@ -900,6 +937,16 @@ static int t2smc_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 		case hwmon_fan_target:
 			ret = t2smc_read_fan(t2, channel, T2SMC_FAN_OPT_TARGET, &speed);
 			break;
+		case hwmon_fan_enable: {
+			/* 1 = SMC automatic control, 0 = manual (fanN_target honoured) */
+			unsigned int manual;
+
+			ret = t2smc_read_fan_manual(t2, channel, &manual);
+			if (ret)
+				return ret;
+			*val = manual ? 0 : 1;
+			return 0;
+		}
 		default:
 			return -EOPNOTSUPP;
 		}
@@ -937,6 +984,11 @@ static int t2smc_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 			if (ret)
 				return ret;
 			return t2smc_write_fan(t2, channel, T2SMC_FAN_OPT_TARGET, speed);
+		case hwmon_fan_enable:
+			/* 1 = give the fan back to the SMC, 0 = manual mode */
+			if (val != 0 && val != 1)
+				return -EINVAL;
+			return t2smc_write_fan_manual(t2, channel, val ? 0 : 1);
 		default:
 			return -EOPNOTSUPP;
 		}
@@ -959,6 +1011,7 @@ static umode_t t2smc_hwmon_is_visible(const void *drvdata,
 		switch (attr) {
 		case hwmon_fan_min:
 		case hwmon_fan_target:
+		case hwmon_fan_enable:
 			return 0644;
 		default:
 			return 0444;
@@ -1364,7 +1417,7 @@ static int t2smc_register_hwmon(struct t2smc_device *t2)
 
 	for (i = 0; i < t2->fan_count; i++)
 		fan_config[i] = HWMON_F_INPUT | HWMON_F_MIN |
-				HWMON_F_MAX | HWMON_F_TARGET;
+				HWMON_F_MAX | HWMON_F_TARGET | HWMON_F_ENABLE;
 
 	fan_info->type   = hwmon_fan;
 	fan_info->config = fan_config;
@@ -1435,6 +1488,9 @@ static int t2smc_register_hwmon(struct t2smc_device *t2)
 static void t2smc_devm_cleanup(void *data)
 {
 	struct t2smc_device *t2 = data;
+
+	/* hand the fans back to the SMC before the MMIO window goes away */
+	t2smc_fans_auto_all(t2);
 
 	if (t2->iomem)
 		iounmap(t2->iomem);
